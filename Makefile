@@ -4,7 +4,7 @@ LDFLAGS ?= -shared
 
 PLUGIN_NAME = libauto_mute_linux_amd64.so
 PKG_NAME = ts3-plugin-automute
-VERSION = 1.1.8
+VERSION = 1.1.9
 ARCH = amd64
 
 BUILD_DIR = build
