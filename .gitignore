@@ -1,0 +1,4 @@
+build/
+*.o
+*.deb
+*.ts3_plugin
