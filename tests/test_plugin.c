@@ -42,13 +42,20 @@ static unsigned int mock_logMessage(const char* msg, int severity, const char* c
     return 0;
 }
 
-static unsigned int mock_setClientSelfVariableAsString(uint64_t scHandlerID, size_t flag, const char* value) {
+static unsigned int mock_setClientSelfVariableAsInt(uint64_t scHandlerID, size_t flag, int value) {
     (void)scHandlerID;
-    if (flag == 5 && strcmp(value, "1") == 0) {
+    if (flag == 5 && value == 1) {
         g_input_muted_calls++;
-    } else if (flag == 6 && strcmp(value, "1") == 0) {
+    } else if (flag == 6 && value == 1) {
         g_output_muted_calls++;
     }
+    return 0;
+}
+
+static unsigned int mock_setClientSelfVariableAsString(uint64_t scHandlerID, size_t flag, const char* value) {
+    (void)scHandlerID;
+    (void)flag;
+    (void)value;
     return 0;
 }
 
@@ -100,7 +107,7 @@ int main(int argc, char** argv) {
     void (*ts3plugin_onConnectStatusChangeEvent)(uint64_t, int, unsigned int) = dlsym(handle, "ts3plugin_onConnectStatusChangeEvent");
 
     assert(ts3plugin_name && strcmp(ts3plugin_name(), "Auto Mute") == 0);
-    assert(ts3plugin_version && strcmp(ts3plugin_version(), "1.1.8") == 0);
+    assert(ts3plugin_version && strcmp(ts3plugin_version(), "1.1.9") == 0);
     assert(ts3plugin_apiVersion && ts3plugin_apiVersion() == 26);
     assert(ts3plugin_requestAutoload && ts3plugin_requestAutoload() == 1);
     printf("[PASS] Metadata & API version (v26) verified\n");
@@ -113,9 +120,11 @@ int main(int argc, char** argv) {
     memset(&funcs, 0, sizeof(funcs));
     funcs.fn[5] = (void*)mock_freeMemory;
     funcs.fn[6] = (void*)mock_logMessage;
+    funcs.fn[76] = (void*)mock_setClientSelfVariableAsInt;
     funcs.fn[77] = (void*)mock_setClientSelfVariableAsString;
     funcs.fn[78] = (void*)mock_flushClientSelfUpdates;
     funcs.fn[99] = (void*)mock_getServerVariableAsString;
+    funcs.fn[180] = (void*)mock_getConfigPath;
     funcs.fn[181] = (void*)mock_getConfigPath;
 
     ts3plugin_setFunctionPointers(funcs);
@@ -142,20 +151,23 @@ int main(int argc, char** argv) {
     /* Test 1: Non-established status should be ignored */
     reset_counters();
     ts3plugin_onConnectStatusChangeEvent(1, 1 /* STATUS_CONNECTING */, 0);
+    usleep(100000);
     assert(g_input_muted_calls == 0 && g_output_muted_calls == 0 && g_flush_calls == 0);
 
     /* Test 2: Established connection with defaults (always_mute=1, mic=1, speaker=1) */
     reset_counters();
     ts3plugin_onConnectStatusChangeEvent(1, 4 /* STATUS_CONNECTION_ESTABLISHED */, 0);
-    assert(g_input_muted_calls == 1);
-    assert(g_output_muted_calls == 1);
-    assert(g_flush_calls == 1);
-    printf("[PASS] Auto-mute on STATUS_CONNECTION_ESTABLISHED verified\n");
+    usleep(600000); /* Wait for delayed retry thread */
+    assert(g_input_muted_calls >= 1);
+    assert(g_output_muted_calls >= 1);
+    assert(g_flush_calls >= 1);
+    printf("[PASS] Auto-mute with integer variable setting & UI propagation verified\n");
 
     /* Test 3: Toggle always_mute off (Menu ID 1) -> should not mute unlisted server */
     ts3plugin_onMenuItemEvent(1, 0, 1, 0);
     reset_counters();
     ts3plugin_onConnectStatusChangeEvent(1, 4, 0);
+    usleep(200000);
     assert(g_input_muted_calls == 0 && g_output_muted_calls == 0 && g_flush_calls == 0);
     printf("[PASS] Toggle always_mute=false verified\n");
 
@@ -164,12 +176,14 @@ int main(int argc, char** argv) {
     ts3plugin_onMenuItemEvent(1, 0, 4, 0);
     reset_counters();
     ts3plugin_onConnectStatusChangeEvent(1, 4, 0);
-    assert(g_input_muted_calls == 1 && g_output_muted_calls == 1 && g_flush_calls == 1);
+    usleep(600000);
+    assert(g_input_muted_calls >= 1 && g_output_muted_calls >= 1 && g_flush_calls >= 1);
 
     /* Unlisted server should not be muted */
     g_mock_server_name = "Unlisted Server";
     reset_counters();
     ts3plugin_onConnectStatusChangeEvent(1, 4, 0);
+    usleep(200000);
     assert(g_input_muted_calls == 0 && g_output_muted_calls == 0 && g_flush_calls == 0);
     printf("[PASS] Per-server allowlist filtering verified\n");
 
@@ -178,7 +192,8 @@ int main(int argc, char** argv) {
     ts3plugin_onMenuItemEvent(1, 0, 3, 0);
     reset_counters();
     ts3plugin_onConnectStatusChangeEvent(1, 4, 0);
-    assert(g_input_muted_calls == 1 && g_output_muted_calls == 0 && g_flush_calls == 1);
+    usleep(600000);
+    assert(g_input_muted_calls >= 1 && g_output_muted_calls == 0 && g_flush_calls >= 1);
     printf("[PASS] Independent microphone/speaker mute toggles verified\n");
 
     ts3plugin_shutdown();
