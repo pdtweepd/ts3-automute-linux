@@ -6,10 +6,12 @@
  * Automatically mutes microphone and/or speakers when joining a TeamSpeak 3 server.
  */
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define PLUGIN_API_VERSION 26
 #define PATH_BUFSIZE 512
@@ -30,8 +32,27 @@ enum ConnectStatus {
 };
 
 enum ClientProperties {
-    CLIENT_INPUT_MUTED = 5,
-    CLIENT_OUTPUT_MUTED = 6
+    CLIENT_UNIQUE_IDENTIFIER = 0,
+    CLIENT_NICKNAME,
+    CLIENT_VERSION,
+    CLIENT_PLATFORM,
+    CLIENT_FLAG_TALKING,
+    CLIENT_INPUT_MUTED,         /* 5: Microphone mute status (MuteInputStatus) */
+    CLIENT_OUTPUT_MUTED,        /* 6: Output / speaker mute status (MuteOutputStatus) */
+    CLIENT_OUTPUTONLY_MUTED,    /* 7: Output-only mute status */
+    CLIENT_INPUT_HARDWARE,
+    CLIENT_OUTPUT_HARDWARE,
+    CLIENT_INPUT_DEACTIVATED    /* 10: Local mic stream deactivation */
+};
+
+enum MuteInputStatus {
+    MUTEINPUT_NONE = 0,
+    MUTEINPUT_MUTED = 1
+};
+
+enum MuteOutputStatus {
+    MUTEOUTPUT_NONE = 0,
+    MUTEOUTPUT_MUTED = 1
 };
 
 enum VirtualServerProperties {
@@ -60,6 +81,7 @@ struct TS3Functions {
 
 typedef unsigned int (*fn_freeMemory)(void* pointer);
 typedef unsigned int (*fn_logMessage)(const char* logMessage, int severity, const char* channel, uint64_t logID);
+typedef unsigned int (*fn_setClientSelfVariableAsInt)(uint64_t scHandlerID, size_t flag, int value);
 typedef unsigned int (*fn_setClientSelfVariableAsString)(uint64_t scHandlerID, size_t flag, const char* value);
 typedef unsigned int (*fn_flushClientSelfUpdates)(uint64_t scHandlerID, const char* returnCode);
 typedef unsigned int (*fn_getServerVariableAsString)(uint64_t scHandlerID, size_t flag, char** result);
@@ -175,19 +197,45 @@ static void toggle_server_in_list(const char* serverName) {
 }
 
 static void apply_mute(uint64_t scHandlerID) {
-    fn_setClientSelfVariableAsString setVar = (fn_setClientSelfVariableAsString)ts3Functions.fn[77];
+    fn_setClientSelfVariableAsInt setVarInt = (fn_setClientSelfVariableAsInt)ts3Functions.fn[76];
+    fn_setClientSelfVariableAsString setVarStr = (fn_setClientSelfVariableAsString)ts3Functions.fn[77];
     fn_flushClientSelfUpdates flushUpdates = (fn_flushClientSelfUpdates)ts3Functions.fn[78];
-    if (!setVar || !flushUpdates) return;
+    if (!flushUpdates) return;
 
     if (cfg_mute_mic) {
-        setVar(scHandlerID, CLIENT_INPUT_MUTED, "1");
+        if (setVarInt) setVarInt(scHandlerID, CLIENT_INPUT_MUTED, MUTEINPUT_MUTED);
+        if (setVarStr) setVarStr(scHandlerID, CLIENT_INPUT_MUTED, "1");
     }
     if (cfg_mute_speaker) {
-        setVar(scHandlerID, CLIENT_OUTPUT_MUTED, "1");
+        if (setVarInt) setVarInt(scHandlerID, CLIENT_OUTPUT_MUTED, MUTEOUTPUT_MUTED);
+        if (setVarStr) setVarStr(scHandlerID, CLIENT_OUTPUT_MUTED, "1");
     }
     if (cfg_mute_mic || cfg_mute_speaker) {
         flushUpdates(scHandlerID, NULL);
     }
+}
+
+struct MuteThreadArg {
+    uint64_t scHandlerID;
+};
+
+static void* delayed_mute_thread(void* param) {
+    struct MuteThreadArg* arg = (struct MuteThreadArg*)param;
+    uint64_t scHandlerID = arg->scHandlerID;
+    free(arg);
+
+    /*
+     * When STATUS_CONNECTION_ESTABLISHED fires, the TeamSpeak client UI
+     * is still finalizing internal channel synchronization.
+     * We apply immediately, and then again after 150ms and 500ms to guarantee
+     * that the TeamSpeak UI toolbar and tree view icon state changes to muted.
+     */
+    apply_mute(scHandlerID);
+    usleep(150000);
+    apply_mute(scHandlerID);
+    usleep(350000);
+    apply_mute(scHandlerID);
+    return NULL;
 }
 
 const char* ts3plugin_name(void) {
@@ -195,7 +243,7 @@ const char* ts3plugin_name(void) {
 }
 
 const char* ts3plugin_version(void) {
-    return "1.1.8";
+    return "1.1.9";
 }
 
 int ts3plugin_apiVersion(void) {
@@ -216,7 +264,10 @@ void ts3plugin_setFunctionPointers(const struct TS3Functions funcs) {
 
 int ts3plugin_init(void) {
     char cfgDir[PATH_BUFSIZE] = {0};
-    fn_getConfigPath getConfigPath = (fn_getConfigPath)ts3Functions.fn[181];
+    fn_getConfigPath getConfigPath = (fn_getConfigPath)ts3Functions.fn[180];
+    if (!getConfigPath) {
+        getConfigPath = (fn_getConfigPath)ts3Functions.fn[181];
+    }
     if (getConfigPath) {
         getConfigPath(cfgDir, sizeof(cfgDir));
         size_t len = strlen(cfgDir);
@@ -311,11 +362,10 @@ void ts3plugin_onMenuItemEvent(uint64_t scHandlerID, enum PluginMenuType type, i
     }
 
     char msg[512];
-    snprintf(msg, sizeof(msg), "AutoMute settings: always_mute=%s, mute_mic=%s, mute_speaker=%s, servers=[%s]",
+    snprintf(msg, sizeof(msg), "AutoMute: always_mute=%s, mute_mic=%s, mute_speaker=%s",
              cfg_always_mute ? "true" : "false",
              cfg_mute_mic ? "true" : "false",
-             cfg_mute_speaker ? "true" : "false",
-             cfg_server_list);
+             cfg_mute_speaker ? "true" : "false");
     log_info(scHandlerID, msg);
 }
 
@@ -339,7 +389,19 @@ void ts3plugin_onConnectStatusChangeEvent(uint64_t scHandlerID, int newStatus, u
     }
 
     if (should_mute) {
-        apply_mute(scHandlerID);
+        struct MuteThreadArg* arg = (struct MuteThreadArg*)malloc(sizeof(struct MuteThreadArg));
+        if (arg) {
+            arg->scHandlerID = scHandlerID;
+            pthread_t tid;
+            if (pthread_create(&tid, NULL, delayed_mute_thread, arg) == 0) {
+                pthread_detach(tid);
+            } else {
+                free(arg);
+                apply_mute(scHandlerID);
+            }
+        } else {
+            apply_mute(scHandlerID);
+        }
         log_info(scHandlerID, "AutoMute applied on server connection.");
     }
 }
