@@ -36,16 +36,16 @@ Build and install the `.deb` package:
 ```bash
 sudo apt update && sudo apt install -y build-essential zip dpkg-dev
 make package-deb
-sudo apt install ./build/ts3-plugin-automute_1.1.8_amd64.deb
+sudo apt install ./build/ts3-plugin-automute_1.2.0_amd64.deb
 ts3-automute-install
 ```
 
 ### Option 3: `.ts3_plugin` Package
-Build `build/automute_1.1.8_linux_amd64.ts3_plugin` and extract it to your TeamSpeak 3 client directory:
+Build `build/automute_1.2.0_linux_amd64.ts3_plugin` and extract it to your TeamSpeak 3 client directory:
 
 ```bash
 make package-ts3
-unzip -o build/automute_1.1.8_linux_amd64.ts3_plugin "plugins/*" -d ~/.ts3client/
+unzip -o build/automute_1.2.0_linux_amd64.ts3_plugin "plugins/*" -d ~/.ts3client/
 ```
 
 ---

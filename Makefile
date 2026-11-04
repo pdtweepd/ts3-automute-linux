@@ -4,7 +4,7 @@ LDFLAGS ?= -shared
 
 PLUGIN_NAME = libauto_mute_linux_amd64.so
 PKG_NAME = ts3-plugin-automute
-VERSION = 1.1.9
+VERSION = 1.2.0
 ARCH = amd64
 
 BUILD_DIR = build
@@ -29,7 +29,11 @@ package-ts3: $(BUILD_DIR)/$(PLUGIN_NAME)
 	@cp $(BUILD_DIR)/$(PLUGIN_NAME) $(TS3_PKG_ROOT)/plugins/
 	@if [ -d assets/auto_mute ]; then cp -r assets/auto_mute/* $(TS3_PKG_ROOT)/plugins/auto_mute/ 2>/dev/null || true; fi
 	@printf "Name = Auto Mute\nType = Plugin\nAuthor = CubE / Linux Port\nVersion = $(VERSION)\nPlatforms = linux_amd64\nDescription = \"AutoMute lets you choose if you want to join servers with your microphone and/or speakers muted.\"\n" > $(TS3_PKG_ROOT)/package.ini
-	@cd $(TS3_PKG_ROOT) && zip -rq ../automute_$(VERSION)_linux_$(ARCH).ts3_plugin package.ini plugins/
+	@if command -v zip >/dev/null 2>&1; then \
+		cd $(TS3_PKG_ROOT) && zip -rq ../automute_$(VERSION)_linux_$(ARCH).ts3_plugin package.ini plugins/; \
+	else \
+		python3 -c "import zipfile, os; z = zipfile.ZipFile('$(BUILD_DIR)/automute_$(VERSION)_linux_$(ARCH).ts3_plugin', 'w', zipfile.ZIP_DEFLATED); [z.write(os.path.join(root, f), os.path.relpath(os.path.join(root, f), '$(TS3_PKG_ROOT)')) for root, _, files in os.walk('$(TS3_PKG_ROOT)') for f in files]"; \
+	fi
 
 package-deb: $(BUILD_DIR)/$(PLUGIN_NAME)
 	@rm -rf $(DEB_ROOT)
@@ -41,10 +45,11 @@ package-deb: $(BUILD_DIR)/$(PLUGIN_NAME)
 	@cp install.sh $(DEB_ROOT)/usr/bin/ts3-automute-install
 	@chmod 0755 $(DEB_ROOT)/usr/bin/ts3-automute-install
 	@printf "Package: $(PKG_NAME)\nVersion: $(VERSION)\nSection: net\nPriority: optional\nArchitecture: $(ARCH)\nDepends: libc6 (>= 2.17)\nMaintainer: Emiel <pdtweepd@gmail.com>\nDescription: Auto Mute plugin for TeamSpeak 3 Client on Linux (API v26)\n Automatically mutes microphone and/or speakers upon connecting to a\n TeamSpeak 3 server. Run 'ts3-automute-install' to enable for your user\n profile (supports both native and Flatpak TeamSpeak 3 installations).\n" > $(DEB_ROOT)/DEBIAN/control
+	@chmod 0755 $(DEB_ROOT)/DEBIAN
 	@dpkg-deb --root-owner-group --build $(DEB_ROOT) $(BUILD_DIR)/$(PKG_NAME)_$(VERSION)_$(ARCH).deb >/dev/null
 
 install: $(BUILD_DIR)/$(PLUGIN_NAME)
-	./install.sh
+	bash install.sh
 
 clean:
 	rm -rf $(BUILD_DIR)
